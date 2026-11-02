@@ -5,16 +5,12 @@
 | 页面 | 内容 |
 | --- | --- |
 | `docs/index.md` | 首页和打字示意 |
-| `docs/macos.md` | macOS 输入法与版本说明 |
-| `docs/ios.md` | iOS 键盘 |
-| `docs/windows.md` | Windows 后续版本 |
-| `docs/android.md` | Android 输入法与版本说明 |
-| `docs/pain.md` | 各端都会有的造词、同步、标点和日期 |
-| `docs/guide/` | 从 macOS 输入法仓库迁来的使用说明（含 [注册与付费](docs/guide/register.md)） |
+| `docs/desktop.md` · `mobile.md` | 桌面端 / 移动端说明 |
+| `docs/guide/lexicon.md` · `register.md` | 词库同步与注册说明 |
 
 ```bash
 npm install
-npm run docs:dev
+npm run docs:dev   # http://localhost:8766
 ```
 
 推到 `main` 后，GitHub Actions 会构建并部署到 GitHub Pages。

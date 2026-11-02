@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { HIGHLIGHT_LINES } from './homeHighlights'
 
 type Scene = 'type' | 'rank' | 'add'
 
@@ -7,10 +8,20 @@ const props = withDefaults(defineProps<{
   variant?: 'mac' | 'ios'
   // type 输入 / rank 排序 / add 造词，各页只播对应那一块
   scene?: Scene
+  /** default 完整造句；highlights 首页逐条输入功能点 */
+  script?: 'default' | 'highlights'
+  /** 固定窗口宽度，高度随正文与候选区自动增高（首页用） */
+  fixedFrame?: boolean
 }>(), {
   variant: 'mac',
-  scene: 'type'
+  scene: 'type',
+  script: 'default',
+  fixedFrame: false
 })
+
+const emit = defineEmits<{
+  'highlight-progress': [count: number]
+}>()
 
 type Cand = {
   text: string
@@ -36,6 +47,8 @@ type Frame = {
   addCode?: string
   addText?: string
   editingCode?: boolean
+  /** highlights：已完成的功能行数（0 表示清空） */
+  featuresDone?: number
 }
 
 const rankRows: RankRow[] = [
@@ -69,7 +82,7 @@ const timeCands: Cand[] = [
   { text: `${hh}${mm}${ss}` }
 ]
 
-const frames: Frame[] = [
+const defaultFrames: Frame[] = [
   { text: '', code: 'g', cands: [], hold: 280, scene: 'type', pressed: 'g' },
   { text: '', code: 'gg', cands: [], hold: 280, scene: 'type', pressed: 'g' },
   { text: '', code: 'ggt', cands: [], hold: 280, scene: 'type', pressed: 't' },
@@ -94,8 +107,79 @@ const frames: Frame[] = [
   { text: `五笔输入法 ${timeText} `, code: 'gsgt', cands: gsgtCands, hold: 4500, scene: 'add', addCode: 'gsgt', addText: '玫枫五笔' }
 ]
 
-const playlist = computed(() => frames.filter(item => item.scene === props.scene))
-const frame = ref<Frame>(playlist.value[0] ?? frames[0])
+type Seg = { text: string; code: string }
+
+/** 按键间隔：7 键/秒 */
+const HIGHLIGHT_KEY_MS = Math.round(1000 / 7)
+
+const HIGHLIGHT_TIMING = {
+  key: HIGHLIGHT_KEY_MS,
+  cand: HIGHLIGHT_KEY_MS * 3,
+  commit: HIGHLIGHT_KEY_MS,
+  line: HIGHLIGHT_KEY_MS * 2,
+  finale: HIGHLIGHT_KEY_MS * 10,
+  clear: HIGHLIGHT_KEY_MS * 3
+} as const
+
+function typeSegment(seq: Frame[], doc: string, seg: Seg): string {
+  const { text: phrase, code: fullCode } = seg
+  for (let c = 1; c <= fullCode.length; c++) {
+    seq.push({
+      text: doc,
+      code: fullCode.slice(0, c),
+      cands: [],
+      hold: HIGHLIGHT_TIMING.key,
+      scene: 'type',
+      pressed: fullCode[c - 1]
+    })
+  }
+  seq.push({
+    text: doc,
+    code: fullCode,
+    cands: [{ text: phrase, code: fullCode }],
+    hold: HIGHLIGHT_TIMING.cand,
+    scene: 'type'
+  })
+  seq.push({
+    text: doc + phrase,
+    code: '',
+    cands: [],
+    hold: HIGHLIGHT_TIMING.commit,
+    scene: 'type'
+  })
+  return doc + phrase
+}
+
+function buildHighlightFrames(): Frame[] {
+  const seq: Frame[] = []
+  let doc = ''
+
+  for (let li = 0; li < HIGHLIGHT_LINES.length; li++) {
+    const line = HIGHLIGHT_LINES[li]
+    for (let si = 0; si < line.length; si++) {
+      doc = typeSegment(seq, doc, line[si])
+    }
+    const done = li + 1
+    if (li < HIGHLIGHT_LINES.length - 1) {
+      doc += '\n'
+      seq.push({ text: doc, code: '', cands: [], hold: HIGHLIGHT_TIMING.line, scene: 'type', featuresDone: done })
+    } else {
+      seq.push({ text: doc, code: '', cands: [], hold: HIGHLIGHT_TIMING.finale, scene: 'type', featuresDone: done })
+    }
+  }
+
+  seq.push({ text: '', code: '', cands: [], hold: HIGHLIGHT_TIMING.clear, scene: 'type', featuresDone: 0 })
+  return seq
+}
+
+const highlightFrames = buildHighlightFrames()
+
+const sourceFrames = computed(() =>
+  props.script === 'highlights' ? highlightFrames : defaultFrames
+)
+
+const playlist = computed(() => sourceFrames.value.filter(item => item.scene === props.scene))
+const frame = ref<Frame>(playlist.value[0] ?? defaultFrames[0])
 let timer = 0
 let index = 0
 
@@ -114,6 +198,9 @@ function step() {
   if (list.length === 0) return
   if (index >= list.length) index = 0
   frame.value = list[index]
+  if (props.script === 'highlights' && list[index].featuresDone !== undefined) {
+    emit('highlight-progress', list[index].featuresDone!)
+  }
   const hold = list[index].hold
   index = (index + 1) % list.length
   timer = window.setTimeout(step, hold)
@@ -134,36 +221,18 @@ const cands = computed(() => frame.value.cands)
 const showBar = computed(() => code.value.length > 0 || cands.value.length > 0)
 const showRank = computed(() => scene.value === 'rank')
 const showAdd = computed(() => scene.value === 'add')
-const hint = computed(() => {
-  if (props.variant === 'ios') {
-    if (props.scene === 'rank') {
-      return '候选栏右侧点「排序」。拖动一行调整顺序，幅度是相对旁边那条候选的权重差。'
-    }
-    if (props.scene === 'add') {
-      return '候选栏右侧点「造词」。先填编码再填词条，同码会列在键区上方。'
-    }
-    return '示意与 iOS 键盘一致：候选在键上方，右侧是展开、排序、造词。编码画在首选上方。'
-  }
-  if (props.scene === 'rank') {
-    return '候选出现时按 ⌃⌥0 打开排序。拖动一行只改被拖动那一条的权重。'
-  }
-  if (props.scene === 'add') {
-    return '默认 ⌃⌥N 打开造词窗口，不抢当前软件的前台。词条框里可以继续用五笔组字。'
-  }
-  return '示意用 macOS「简约黑白」皮肤：编码以下划线留在光标处，候选跟在光标旁边。打「五笔输入法」再打 time。'
-})
 </script>
 
 <template>
-  <div class="demo">
+  <div class="demo" :class="{ 'demo--fixed-frame': props.fixedFrame }">
     <!-- macOS：记事本 + 简约黑白候选条 + 排序窗 / 造词窗 -->
-    <div v-if="props.variant === 'mac'" class="stage" :class="{ tall: showRank || showAdd }">
+    <div v-if="props.variant === 'mac'" class="stage" :class="{ tall: showRank || showAdd, 'stage--overflow-visible': props.fixedFrame }">
       <div class="top">
         <span class="dots" aria-hidden="true"><i /><i /><i /></span>
         <span>无标题</span>
       </div>
       <div class="doc">
-        <p class="line">
+        <p class="line" :class="{ 'line--stack': props.script === 'highlights' || text.includes('\n') }">
           {{ text }}<span v-if="code" class="comp">{{ code }}</span><span class="caret-wrap"><span class="caret" aria-hidden="true" /><span
             v-if="showBar && !showRank && !showAdd"
             class="mac-cand-bar"
@@ -188,7 +257,7 @@ const hint = computed(() => {
       <div v-if="showRank" class="mac-sheet rank-sheet" aria-label="候选排序">
         <div class="sheet-top">
           <span class="dots" aria-hidden="true"><i /><i /><i /></span>
-          <span>候选排序 ⌃⌥0</span>
+          <span>候选排序 <kbd>⌃</kbd><kbd>⌥</kbd><kbd>0</kbd></span>
         </div>
         <div class="sheet-body">
           <div class="rank-head">
@@ -368,12 +437,68 @@ const hint = computed(() => {
         </template>
       </div>
     </div>
-    <p class="hint">{{ hint }}</p>
+    <p class="hint">
+      <template v-if="props.variant === 'ios'">
+        <template v-if="props.scene === 'rank'">候选栏右侧点「排序」。拖动一行调整顺序，幅度是相对旁边那条候选的权重差。</template>
+        <template v-else-if="props.scene === 'add'">候选栏右侧点「造词」。先填编码再填词条，同码会列在键区上方。</template>
+        <template v-else>示意与 iOS 键盘一致：候选在键上方，右侧是展开、排序、造词。编码画在首选上方。</template>
+      </template>
+      <template v-else-if="props.scene === 'rank'">
+        候选出现时按 <kbd>⌃</kbd><kbd>⌥</kbd><kbd>0</kbd> 打开排序。拖动一行只改被拖动那一条的权重。
+      </template>
+      <template v-else-if="props.scene === 'add'">
+        默认 <kbd>⌃</kbd><kbd>⌥</kbd><kbd>N</kbd> 打开造词窗口，不抢当前软件的前台。词条框里可以继续用五笔组字。
+      </template>
+      <template v-else>macOS「简约黑白」皮肤</template>
+    </p>
   </div>
 </template>
 
 <style scoped>
 .demo { margin: 24px 0 8px; }
+.demo--fixed-frame .line--stack {
+  font-size: 17px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+.demo--fixed-frame {
+  overflow: visible;
+  padding-bottom: 28px;
+  margin-bottom: 4px;
+}
+.demo--fixed-frame .stage {
+  width: 580px;
+  max-width: calc(100vw - 32px);
+  height: auto;
+  box-sizing: border-box;
+  border-radius: 0;
+}
+.stage.stage--overflow-visible {
+  overflow: visible;
+}
+.demo--fixed-frame .doc {
+  min-height: 0;
+  height: auto;
+  padding: 24px 20px 96px;
+  box-sizing: border-box;
+  overflow: visible;
+}
+.demo--fixed-frame .line {
+  overflow: visible;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+.demo--fixed-frame .caret-wrap {
+  overflow: visible;
+}
+.demo--fixed-frame .top {
+  background: linear-gradient(180deg, #f5f5f7 0%, #ebebed 100%);
+  border-bottom-color: rgba(0, 0, 0, 0.08);
+}
+:global(html.dark) .demo--fixed-frame .top {
+  background: linear-gradient(180deg, #3a3a3c 0%, #2c2c2e 100%);
+  border-bottom-color: rgba(255, 255, 255, 0.08);
+}
 .stage, .phone {
   position: relative;
   border: 1px solid var(--vp-c-divider);
